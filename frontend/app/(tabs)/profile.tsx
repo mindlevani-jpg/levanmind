@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Switch } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Switch, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -19,13 +19,22 @@ export default function Profile() {
     api.get('/user/stats').then(r => setStats(r.data)).finally(() => setLoading(false));
   }, []));
 
+  const doLogout = async () => {
+    await signOut();
+    router.replace('/(auth)/login');
+  };
+
   const confirmLogout = () => {
+    if (Platform.OS === 'web') {
+      // RN Web's Alert.alert destructive callback is unreliable; use native confirm.
+      // eslint-disable-next-line no-alert
+      const ok = typeof window !== 'undefined' ? window.confirm('ნამდვილად გსურს გასვლა?') : true;
+      if (ok) doLogout();
+      return;
+    }
     Alert.alert('გასვლა', 'ნამდვილად გსურს გასვლა?', [
       { text: 'გაუქმება', style: 'cancel' },
-      { text: 'გასვლა', style: 'destructive', onPress: async () => {
-        await signOut();
-        router.replace('/(auth)/login');
-      }},
+      { text: 'გასვლა', style: 'destructive', onPress: doLogout },
     ]);
   };
 

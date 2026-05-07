@@ -14,9 +14,11 @@ function RootNav() {
   const router = useRouter();
   const [welcomeShown, setWelcomeShown] = useState<boolean | null>(null);
 
+  // Re-read welcome_shown flag on every segment change so the welcome
+  // screen's setItem is picked up immediately after navigation.
   useEffect(() => {
     AsyncStorage.getItem('welcome_shown').then(v => setWelcomeShown(v === '1'));
-  }, []);
+  }, [segments[0]]);
 
   useEffect(() => {
     if (loading || welcomeShown === null) return;
@@ -29,7 +31,7 @@ function RootNav() {
     // not authenticated
     if (!welcomeShown && !onWelcome) {
       router.replace('/welcome');
-    } else if (welcomeShown && !inAuth) {
+    } else if (welcomeShown && !inAuth && !onWelcome) {
       router.replace('/(auth)/login');
     }
   }, [user, loading, segments, welcomeShown]);

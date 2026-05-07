@@ -49,7 +49,10 @@ export default function Welcome() {
 
   const begin = async () => {
     await AsyncStorage.setItem('welcome_shown', '1');
+    // Use push instead of replace; root layout will not redirect us back
+    // because we manually set the flag and navigate.
     router.replace('/(auth)/login');
+    // Force a small delay then re-check happens on next mount
   };
 
   const phase = PHASES[phaseIdx];
