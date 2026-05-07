@@ -53,6 +53,8 @@ function RootNav() {
         <Stack.Screen name="player" options={{ presentation: 'modal' }} />
         <Stack.Screen name="journal" options={{ presentation: 'modal' }} />
         <Stack.Screen name="achievements" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="paywall" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="payment-success" options={{ presentation: 'modal', gestureEnabled: false }} />
       </Stack>
     </>
   );

@@ -243,3 +243,60 @@ class TestTheme:
     def test_set_theme_invalid(self, client, auth_headers):
         r = client.post(f"{BASE_URL}/api/user/theme", json={"theme": "blue"}, headers=auth_headers)
         assert r.status_code == 400
+
+
+# ---------------- Payments / Stripe ----------------
+class TestPayments:
+    def test_packages_returns_premium_lifetime(self, client):
+        r = client.get(f"{BASE_URL}/api/payments/packages")
+        assert r.status_code == 200
+        d = r.json()
+        assert "premium-lifetime" in d, d
+        pkg = d["premium-lifetime"]
+        assert pkg["amount"] == 6.99
+        assert pkg["currency"] == "gel"
+        assert pkg.get("grants") == "premium"
+
+    def test_create_checkout_session_requires_auth(self, client):
+        r = client.post(f"{BASE_URL}/api/payments/checkout/session",
+                        json={"package_id": "premium-lifetime",
+                              "origin_url": BASE_URL})
+        assert r.status_code == 401
+
+    def test_create_checkout_invalid_package(self, client, auth_headers):
+        r = client.post(f"{BASE_URL}/api/payments/checkout/session",
+                        json={"package_id": "bogus-pkg", "origin_url": BASE_URL},
+                        headers=auth_headers)
+        assert r.status_code == 400
+
+    def test_create_checkout_session_success_and_persists(self, client, auth_headers):
+        r = client.post(f"{BASE_URL}/api/payments/checkout/session",
+                        json={"package_id": "premium-lifetime",
+                              "origin_url": BASE_URL},
+                        headers=auth_headers)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert "url" in d and d["url"].startswith("https://")
+        assert "session_id" in d and d["session_id"]
+        assert "stripe.com" in d["url"] or "checkout" in d["url"].lower()
+
+        # Verify status endpoint reachable for this session and returns required fields
+        sid = d["session_id"]
+        s = client.get(f"{BASE_URL}/api/payments/checkout/status/{sid}", headers=auth_headers)
+        assert s.status_code == 200, s.text
+        sd = s.json()
+        for k in ["status", "payment_status"]:
+            assert k in sd, f"missing {k} in status response"
+        # Newly created session should be unpaid
+        assert sd["payment_status"] in ("unpaid", "no_payment_required")
+
+    def test_status_requires_auth(self, client):
+        r = client.get(f"{BASE_URL}/api/payments/checkout/status/dummy_session_id")
+        assert r.status_code == 401
+
+    def test_status_unknown_session_returns_404(self, client, auth_headers):
+        r = client.get(
+            f"{BASE_URL}/api/payments/checkout/status/cs_unknown_{uuid.uuid4().hex[:8]}",
+            headers=auth_headers,
+        )
+        assert r.status_code == 404

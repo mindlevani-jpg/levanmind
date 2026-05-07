@@ -156,6 +156,8 @@ const s = StyleSheet.create({
   avatar: { width: 96, height: 96, borderRadius: 48, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#fff', fontSize: 36, fontWeight: '700' },
   name: { fontSize: 24, fontWeight: '700', marginTop: spacing.md },
+  premiumBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFB80022', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginTop: 6, borderWidth: 1, borderColor: '#FFB800' },
+  premiumText: { color: '#FFB800', fontSize: 11, fontWeight: '700', marginLeft: 4, letterSpacing: 1 },
   email: { fontSize: 14, marginTop: 4, marginBottom: spacing.lg },
   streakCard: { width: '100%', flexDirection: 'row', alignItems: 'center', borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, marginBottom: spacing.md },
   streakNum: { fontSize: 22, fontWeight: '700' },

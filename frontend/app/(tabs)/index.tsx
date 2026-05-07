@@ -60,14 +60,14 @@ export default function Home() {
         <Text style={s.hello} testID="home-greeting">{greeting(user?.name || 'მოგზაურო')}</Text>
         <Text style={s.h1}>დავიწყოთ თქვენი მოგზაურობა</Text>
 
-        <View style={s.banner} testID="special-offer-banner">
+        <TouchableOpacity style={s.banner} testID="special-offer-banner" onPress={() => router.push('/paywall')}>
           <Ionicons name="gift-outline" size={22} color={colors.accent} />
           <View style={{ flex: 1, marginLeft: spacing.md }}>
             <Text style={s.bannerTitle}>სპეციალური შეთავაზება</Text>
             <Text style={s.bannerSub}>იწურება {countdown}-ში</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={colors.textDim} />
-        </View>
+        </TouchableOpacity>
 
         <TouchableOpacity
           testID="breathing-card"

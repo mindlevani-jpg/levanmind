@@ -17,6 +17,9 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout, CheckoutSessionRequest, CheckoutSessionResponse, CheckoutStatusResponse,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +107,7 @@ class UserPublic(BaseModel):
     email: str
     name: str
     picture: Optional[str] = None
+    is_premium: bool = False
     created_at: str
 
 
@@ -364,6 +368,7 @@ def user_to_public(u: dict) -> dict:
         "email": u["email"],
         "name": u["name"],
         "picture": u.get("picture"),
+        "is_premium": bool(u.get("is_premium", False)),
         "created_at": u["created_at"] if isinstance(u["created_at"], str) else u["created_at"].isoformat(),
     }
 
@@ -567,6 +572,148 @@ async def set_theme(data: ThemeInput, current_user: dict = Depends(get_current_u
         raise HTTPException(status_code=400, detail="Invalid theme")
     await db.users.update_one({"id": current_user["id"]}, {"$set": {"preferences.theme": data.theme}})
     return {"theme": data.theme}
+
+
+# ---------------------------------------------------------------------------
+# Stripe Checkout (premium upgrade)
+# ---------------------------------------------------------------------------
+# Server-defined fixed packages — never trust client amount
+PACKAGES = {
+    "premium-lifetime": {"amount": 6.99, "currency": "gel", "label": "Premium Lifetime", "grants": "premium"},
+}
+
+
+class CheckoutCreateInput(BaseModel):
+    package_id: str
+    origin_url: str  # frontend origin for success/cancel URLs
+    metadata: Optional[dict] = None
+
+
+@api_router.post("/payments/checkout/session")
+async def create_checkout(data: CheckoutCreateInput, current_user: dict = Depends(get_current_user)):
+    if data.package_id not in PACKAGES:
+        raise HTTPException(status_code=400, detail="Invalid package")
+    pkg = PACKAGES[data.package_id]
+    api_key = os.environ.get("STRIPE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    origin = data.origin_url.rstrip("/")
+    success_url = f"{origin}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/(tabs)"
+
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{origin}/api/webhook/stripe")
+    metadata = {
+        "user_id": current_user["id"],
+        "user_email": current_user["email"],
+        "package_id": data.package_id,
+        "grants": pkg["grants"],
+        **(data.metadata or {}),
+    }
+    req = CheckoutSessionRequest(
+        amount=float(pkg["amount"]),
+        currency=pkg["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+    )
+    session: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(req)
+
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.session_id,
+        "user_id": current_user["id"],
+        "user_email": current_user["email"],
+        "package_id": data.package_id,
+        "amount": float(pkg["amount"]),
+        "currency": pkg["currency"],
+        "metadata": metadata,
+        "status": "initiated",
+        "payment_status": "unpaid",
+        "grants_applied": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api_router.get("/payments/checkout/status/{session_id}")
+async def checkout_status(session_id: str, current_user: dict = Depends(get_current_user)):
+    api_key = os.environ.get("STRIPE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.get("user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url="")
+    status: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(session_id)
+
+    new_doc = {
+        "status": status.status,
+        "payment_status": status.payment_status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Idempotent: only grant once
+    if status.payment_status == "paid" and not tx.get("grants_applied"):
+        grants = tx.get("metadata", {}).get("grants")
+        if grants == "premium":
+            await db.users.update_one(
+                {"id": tx["user_id"]},
+                {"$set": {"is_premium": True, "premium_since": datetime.now(timezone.utc).isoformat()}},
+            )
+        new_doc["grants_applied"] = True
+    await db.payment_transactions.update_one({"session_id": session_id}, {"$set": new_doc})
+
+    return {
+        "status": status.status,
+        "payment_status": status.payment_status,
+        "amount_total": status.amount_total,
+        "currency": status.currency,
+        "metadata": status.metadata,
+    }
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    api_key = os.environ.get("STRIPE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    try:
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url="")
+        event = await stripe_checkout.handle_webhook(body, sig)
+    except Exception as e:
+        logger.error(f"Stripe webhook error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid webhook")
+    if event.payment_status == "paid":
+        tx = await db.payment_transactions.find_one({"session_id": event.session_id})
+        if tx and not tx.get("grants_applied"):
+            grants = (tx.get("metadata") or {}).get("grants")
+            if grants == "premium":
+                await db.users.update_one(
+                    {"id": tx["user_id"]},
+                    {"$set": {"is_premium": True, "premium_since": datetime.now(timezone.utc).isoformat()}},
+                )
+            await db.payment_transactions.update_one(
+                {"session_id": event.session_id},
+                {"$set": {
+                    "status": "complete",
+                    "payment_status": "paid",
+                    "grants_applied": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+    return {"received": True}
+
+
+@api_router.get("/payments/packages")
+async def list_packages():
+    return PACKAGES
 
 
 # ---------------------------------------------------------------------------
