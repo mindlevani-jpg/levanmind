@@ -649,17 +649,32 @@ async def checkout_status(session_id: str, current_user: dict = Depends(get_curr
     if tx.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url="")
-    status: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(session_id)
+    # Try live Stripe lookup; if unavailable (proxy/api asymmetry), fall back to DB record.
+    # Webhook remains the source of truth for paid state.
+    try:
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url="")
+        status: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(session_id)
+        live_status = status.status
+        live_payment_status = status.payment_status
+        amount_total = status.amount_total
+        currency = status.currency
+        metadata = status.metadata
+    except Exception as e:
+        logger.warning(f"Stripe status lookup failed for {session_id}: {e}; falling back to DB.")
+        live_status = tx.get("status", "open")
+        live_payment_status = tx.get("payment_status", "unpaid")
+        amount_total = int(round(float(tx.get("amount", 0)) * 100))
+        currency = tx.get("currency", "gel")
+        metadata = tx.get("metadata", {})
 
     new_doc = {
-        "status": status.status,
-        "payment_status": status.payment_status,
+        "status": live_status,
+        "payment_status": live_payment_status,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     # Idempotent: only grant once
-    if status.payment_status == "paid" and not tx.get("grants_applied"):
-        grants = tx.get("metadata", {}).get("grants")
+    if live_payment_status == "paid" and not tx.get("grants_applied"):
+        grants = (tx.get("metadata") or {}).get("grants")
         if grants == "premium":
             await db.users.update_one(
                 {"id": tx["user_id"]},
@@ -669,11 +684,11 @@ async def checkout_status(session_id: str, current_user: dict = Depends(get_curr
     await db.payment_transactions.update_one({"session_id": session_id}, {"$set": new_doc})
 
     return {
-        "status": status.status,
-        "payment_status": status.payment_status,
-        "amount_total": status.amount_total,
-        "currency": status.currency,
-        "metadata": status.metadata,
+        "status": live_status,
+        "payment_status": live_payment_status,
+        "amount_total": amount_total,
+        "currency": currency,
+        "metadata": metadata,
     }
 
 
