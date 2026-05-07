@@ -6,6 +6,7 @@ export type User = {
   id: string;
   email: string;
   name: string;
+  picture?: string | null;
   created_at: string;
 };
 
@@ -14,6 +15,7 @@ type AuthCtx = {
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (name: string, email: string, password: string) => Promise<void>;
+  signInWithGoogleSession: (sessionId: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -30,7 +32,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const stored = await AsyncStorage.getItem(USER_KEY);
         if (token && stored) {
           setUser(JSON.parse(stored));
-          // validate
           try {
             const { data } = await api.get('/auth/me');
             setUser(data);
@@ -61,6 +62,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
   };
 
+  const signInWithGoogleSession = async (sessionId: string) => {
+    const { data } = await api.post('/auth/google', { session_id: sessionId });
+    await AsyncStorage.setItem(AUTH_KEY, data.token);
+    await AsyncStorage.setItem(USER_KEY, JSON.stringify(data.user));
+    setUser(data.user);
+  };
+
   const signOut = async () => {
     await AsyncStorage.removeItem(AUTH_KEY);
     await AsyncStorage.removeItem(USER_KEY);
@@ -68,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signIn, signUp, signInWithGoogleSession, signOut }}>
       {children}
     </AuthContext.Provider>
   );

@@ -5,6 +5,8 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://mindful-breathe-11.preview.emergentagent.com").rstrip("/")
+EXPECTED_SESSION_COUNT = 32
+EXPECTED_ACHIEVEMENTS_TOTAL = 9
 TEST_EMAIL = "test@test.com"
 TEST_PASSWORD = "test123"
 
@@ -72,7 +74,7 @@ class TestSessions:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
-        assert len(data) == 11, f"expected 11 sessions, got {len(data)}"
+        assert len(data) == EXPECTED_SESSION_COUNT, f"expected {EXPECTED_SESSION_COUNT} sessions, got {len(data)}"
         for s in data:
             for k in ["id", "title", "duration_min", "audio_url", "category"]:
                 assert k in s
@@ -149,3 +151,95 @@ class TestUserFlows:
         for path in ["/api/user/saved", "/api/user/stats"]:
             r = client.get(f"{BASE_URL}{path}")
             assert r.status_code == 401, path
+
+
+# ---------------- Google Auth ----------------
+class TestGoogleAuth:
+    def test_google_invalid_session_returns_401(self, client):
+        r = client.post(f"{BASE_URL}/api/auth/google",
+                        json={"session_id": "invalid_fake_session_id_xyz"})
+        assert r.status_code == 401, f"got {r.status_code}: {r.text}"
+
+
+# ---------------- Stats / Achievements ----------------
+class TestStatsAchievements:
+    def test_stats_has_streak_and_achievements(self, client, auth_headers):
+        r = client.get(f"{BASE_URL}/api/user/stats", headers=auth_headers)
+        assert r.status_code == 200
+        d = r.json()
+        for k in ["streak", "achievements", "achievements_earned", "achievements_total"]:
+            assert k in d, f"missing {k}"
+        assert d["achievements_total"] == EXPECTED_ACHIEVEMENTS_TOTAL
+        assert isinstance(d["achievements"], list)
+        assert len(d["achievements"]) == EXPECTED_ACHIEVEMENTS_TOTAL
+        # validate shape
+        for a in d["achievements"]:
+            for k in ["id", "title", "desc", "icon", "earned"]:
+                assert k in a
+        assert isinstance(d["streak"], int)
+        assert isinstance(d["achievements_earned"], int)
+        assert 0 <= d["achievements_earned"] <= EXPECTED_ACHIEVEMENTS_TOTAL
+
+
+# ---------------- Mood ----------------
+class TestMood:
+    def test_post_and_get_mood(self, client, auth_headers):
+        r = client.post(f"{BASE_URL}/api/user/mood",
+                        json={"mood": "good", "note": "TEST_mood_note"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d.get("ok") is True
+        assert d["mood"]["mood"] == "good"
+        assert d["mood"]["note"] == "TEST_mood_note"
+        assert "at" in d["mood"]
+
+        g = client.get(f"{BASE_URL}/api/user/mood", headers=auth_headers)
+        assert g.status_code == 200
+        gd = g.json()
+        assert "moods" in gd and isinstance(gd["moods"], list)
+        assert any(m.get("note") == "TEST_mood_note" for m in gd["moods"])
+        assert "today" in gd
+        assert gd["today"] is not None
+        assert gd["today"]["mood"] == "good"
+
+    def test_mood_requires_auth(self, client):
+        r = client.post(f"{BASE_URL}/api/user/mood", json={"mood": "good"})
+        assert r.status_code == 401
+
+
+# ---------------- Journal ----------------
+class TestJournal:
+    def test_post_and_get_journal(self, client, auth_headers):
+        text = f"TEST_journal_{uuid.uuid4().hex[:6]}"
+        r = client.post(f"{BASE_URL}/api/user/journal",
+                        json={"text": text, "mood": "good"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert "id" in d and d["text"] == text and d["mood"] == "good" and "at" in d
+
+        g = client.get(f"{BASE_URL}/api/user/journal", headers=auth_headers)
+        assert g.status_code == 200
+        gd = g.json()
+        assert "entries" in gd and isinstance(gd["entries"], list)
+        assert any(e["id"] == d["id"] and e["text"] == text for e in gd["entries"])
+
+    def test_journal_text_required(self, client, auth_headers):
+        r = client.post(f"{BASE_URL}/api/user/journal", json={"text": ""}, headers=auth_headers)
+        assert r.status_code == 422
+
+
+# ---------------- Theme ----------------
+class TestTheme:
+    def test_set_theme_light_then_dark(self, client, auth_headers):
+        r1 = client.post(f"{BASE_URL}/api/user/theme", json={"theme": "light"}, headers=auth_headers)
+        assert r1.status_code == 200
+        assert r1.json()["theme"] == "light"
+        r2 = client.post(f"{BASE_URL}/api/user/theme", json={"theme": "dark"}, headers=auth_headers)
+        assert r2.status_code == 200
+        assert r2.json()["theme"] == "dark"
+
+    def test_set_theme_invalid(self, client, auth_headers):
+        r = client.post(f"{BASE_URL}/api/user/theme", json={"theme": "blue"}, headers=auth_headers)
+        assert r.status_code == 400
